@@ -30,7 +30,7 @@ This skill automates a weekly crypto newsletter with two components:
 ## 📁 文件结构 | File Structure
 
 ```
-gater-weekly-report-skill/
+weekly-report-skill/
 ├── README.md              # 本文件
 ├── SKILL.md               # 完整 Skill 说明（给 AI Agent 读取）
 ├── scripts/
@@ -49,7 +49,7 @@ gater-weekly-report-skill/
 
 ```
 请读取并执行以下 Skill：
-https://raw.githubusercontent.com/tonyfeng2018/gater-weekly-report-skill/main/SKILL.md
+https://raw.githubusercontent.com/tonyfeng2018/weekly-report-skill/main/SKILL.md
 ```
 
 ### 方式二：Claude / GPT 等模型手动使用
