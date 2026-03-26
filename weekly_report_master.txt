@@ -1,0 +1,777 @@
+加密周报自动化系统 完整操作手册 v1.1
+作者：Gater × AI Agent | 2026-03-26
+
+================================================================================
+第1段：系统概览、时间窗口、配置
+================================================================================
+
+=== 加密周报自动化系统 完整操作手册 v1.1 ===
+
+【执行时间】每周二 北京时间15:00（UTC 07:00）
+【内容一】每周10条深度资讯候选
+【内容二】链上数据三张表 + 原因分析写入 Google Sheet
+
+【数据时间窗口】
+- 资讯：上周三00:00 → 本周二23:59
+- 链上数据：上上周一00:00 → 上周日23:59（完整自然周）
+  示例：4/1（周二）执行 → 数据覆盖 3/23–3/29
+
+【Google Sheet配置】
+- Sheet ID: 1Iaus-JyVbvdD6CENbG66nOp7vl59pyJL-jvtJwHJL1Q
+- Service Account: gate-weeklu@gate-weekly.iam.gserviceaccount.com
+- Key文件: ~/.openclaw/workspace/memory/gcp-service-account.json
+- Tab命名规则: YYYY-MM-DD（数据周的周一日期）
+
+【GitHub仓库】
+https://github.com/tonyfeng2018/weekly-report-skill
+
+================================================================================
+第2段：资讯来源 + 踩坑记录
+================================================================================
+
+=== 内容一：资讯来源 ===
+
+【可用来源】
+✅ ChainFeeds Substack RSS（最优先）
+  URL: https://chainfeeds.substack.com/feed
+  方式: RSS XML解析，免登录，已聚合TechFlow/BlockBeats等
+
+✅ PANews深度列表
+  URL: https://www.panewslab.com/zh/in-depth
+  方式: web_fetch抓HTML，提取/zh/articles/xxx链接
+
+✅ Odaily深度列表
+  URL: https://www.odaily.news/zh-CN/deep
+  方式: web_fetch抓HTML，提取/zh-CN/post/xxx链接
+
+❌ TechFlow → 无法抓取（ChainFeeds已聚合，不需要）
+❌ ChainFeeds.me → 需登录（改用Substack RSS）
+❌ BlockBeats列表页 → 只返回1条（有URL时单篇可抓）
+❌ 搜索页 → 无内容，不要用
+
+【踩坑1】原来用chainfeeds.me → 改用chainfeeds.substack.com/feed
+【踩坑2】列表页搜索功能无效 → 直接访问深度文章列表页
+
+================================================================================
+第3段：选题标准 + 输出格式
+================================================================================
+
+=== 选题标准（Gater确认偏好）===
+
+【✅ 优先选 ⭐⭐⭐】
+- 机制拆解型：解释"为什么/底层逻辑"，不是"发生了什么"
+- 数据支撑的结构性判断：有具体数字+反共识结论
+- 行业结构性转变分析
+
+【✅ 可选 ⭐⭐】
+- 重要机构/人物深度观点（有实质判断，非泛泛表态）
+- 新赛道演化前沿判断（有逻辑框架）
+
+【❌ 明确不选】
+- 纯新闻播报（"XX宣布XX"）
+- 行情预测/技术分析
+- 价值观/精神叙事类
+- 单项目功能介绍
+- 名人泛泛表态
+- 速览/项目列举型
+
+【主题偏好排序】
+1. DeFi机制与演化（稳定币/借贷/收益来源）
+2. 监管政策与金融权力博弈
+3. 机构行为与市场结构
+4. AI × Crypto 真实结合点
+5. 行业人物深度访谈
+6. 新赛道方向（预测市场/RWA/永续合约）
+
+【输出格式每条固定】
+**[序号]. [文章标题]**
+来源：[URL]
+**核心机制拆解：[副标题，10字以内]**
+- **[要点1]**：说明+数据（数字加粗）
+- **[要点2]**：说明
+- **[要点3]**：说明
+- **[结构性结论/反共识判断]**：最核心洞察
+
+================================================================================
+第4段：fetch_news.py 完整脚本
+================================================================================
+
+#!/usr/bin/env python3
+# fetch_news.py — 资讯抓取脚本
+import urllib.request, xml.etree.ElementTree as ET
+import datetime, json, re
+
+def fetch(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return r.read().decode("utf-8", errors="ignore")
+
+def week_range():
+    today = datetime.date.today()
+    days_to_tue = (today.weekday() - 1) % 7
+    this_tue = today - datetime.timedelta(days=days_to_tue)
+    return this_tue - datetime.timedelta(days=6), this_tue
+
+def chainfeeds(start, end):
+    xml = fetch("https://chainfeeds.substack.com/feed")
+    root = ET.fromstring(xml)
+    items = []
+    for item in root.findall(".//item"):
+        title = item.findtext("title","").strip()
+        link = item.findtext("link","").strip()
+        pub = item.findtext("pubDate","")[:16]
+        try: dt = datetime.datetime.strptime(pub, "%a, %d %b %Y").date()
+        except: dt = datetime.date.today()
+        if start <= dt <= end:
+            items.append({"title":title,"url":link,"source":"ChainFeeds","date":str(dt)})
+    return items
+
+def panews():
+    html = fetch("https://www.panewslab.com/zh/in-depth")
+    paths = list(set(re.findall(r'href="(/zh/articles/[a-zA-Z0-9\-]+)"', html)))
+    items = []
+    for p in paths[:20]:
+        url = f"https://www.panewslab.com{p}"
+        c = fetch(url)
+        m = re.search(r'<title[^>]*>([^<]+)</title>', c)
+        title = re.sub(r'\s*[\|｜].*$','',m.group(1)).strip() if m else p
+        if len(title) > 5:
+            items.append({"title":title,"url":url,"source":"PANews","date":""})
+    return items
+
+def odaily():
+    html = fetch("https://www.odaily.news/zh-CN/deep")
+    paths = list(set(re.findall(r'href="(/zh-CN/post/\d+)"', html)))
+    items = []
+    for p in paths[:20]:
+        url = f"https://www.odaily.news{p}"
+        c = fetch(url)
+        m = re.search(r'<title[^>]*>([^<]+)</title>', c)
+        title = re.sub(r'\s*[\|｜-].*Odaily.*$','',m.group(1)).strip() if m else p
+        if len(title) > 5:
+            items.append({"title":title,"url":url,"source":"Odaily","date":""})
+    return items
+
+if __name__ == "__main__":
+    start, end = week_range()
+    print(f"时间范围：{start} → {end}")
+    all_items = chainfeeds(start,end) + panews() + odaily()
+    seen, unique = set(), []
+    for i in all_items:
+        if i["url"] not in seen:
+            seen.add(i["url"]); unique.append(i)
+    with open("/tmp/news_candidates.json","w",encoding="utf-8") as f:
+        json.dump(unique, f, ensure_ascii=False, indent=2)
+    print(f"✅ {len(unique)}篇候选 → /tmp/news_candidates.json")
+
+================================================================================
+第5段：fetch_defi_data.py 完整脚本（含5个踩坑注释）
+================================================================================
+
+#!/usr/bin/env python3
+# fetch_defi_data.py — DefiLlama链上数据抓取
+# 踩坑1: 总量必须用全局接口，不能各链求和（漏Others）
+# 踩坑2: 周变化不能用change_7dover7d（滚动7天，口径不同）
+#   案例：Hyperliquid L1 API=-11.77% vs 自然周=+6.59%
+# 踩坑3: 链列表动态筛选TVL>$1B，不能硬编码
+# 踩坑4: 全链稳定币总量用/stablecoinchains汇总
+#   错误：表格各链加总=$303.37B | 正确：$316.27B（差$13B）
+# 踩坑5: 必须用parentProtocol合并子协议
+#   错误：Spark子协议各自入选 | 正确：合并后SparkLend=+6.9%，不入选
+
+import urllib.request, json, datetime
+
+def fetch(url):
+    req = urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read())
+
+def date_to_ts(d):
+    return int(datetime.datetime(d.year,d.month,d.day).timestamp())
+
+def get_window():
+    today = datetime.date.today()
+    last_mon = today - datetime.timedelta(days=today.weekday()+7)
+    w1s = date_to_ts(last_mon)
+    return w1s, w1s+7*86400, w1s-7*86400, w1s, last_mon.strftime("%Y-%m-%d")
+
+def table1():
+    w1s,w1e,w0s,w0e,label = get_window()
+    CHAINS = ["Ethereum","Solana","BSC","Base","Hyperliquid L1",
+              "Arbitrum","Polygon","Sui","Avalanche","Tron"]
+    res = {}
+    for c in CHAINS:
+        d = fetch(f"https://api.llama.fi/overview/dexs/{c.replace(' ','%20')}"
+                  f"?excludeTotalDataChart=false&excludeTotalDataChartBreakdown=true")
+        chart = d.get("totalDataChart",[])
+        w1 = sum(v for ts,v in chart if w1s<=ts<w1e)
+        w0 = sum(v for ts,v in chart if w0s<=ts<w0e)
+        res[c] = {"w1":w1,"w0":w0,"chg":(w1-w0)/w0*100 if w0 else 0}
+    # ⚠️ 踩坑1：全链总量用全局接口
+    g = fetch("https://api.llama.fi/overview/dexs"
+              "?excludeTotalDataChart=false&excludeTotalDataChartBreakdown=true")
+    gc = g.get("totalDataChart",[])
+    tw1 = sum(v for ts,v in gc if w1s<=ts<w1e)
+    tw0 = sum(v for ts,v in gc if w0s<=ts<w0e)
+    res["Others"] = {"w1":tw1-sum(r["w1"] for r in res.values()),"w0":0,"chg":0}
+    res["Total"] = {"w1":tw1,"w0":tw0,"chg":(tw1-tw0)/tw0*100 if tw0 else 0}
+    return res, label
+
+def table2():
+    # ⚠️ 踩坑3：动态筛选
+    chains = fetch("https://api.llama.fi/v2/chains")
+    big = sorted([c for c in chains if c.get("tvl",0)>1e9],
+                 key=lambda x:x["tvl"],reverse=True)
+    res = []
+    for c in big:
+        n = c["name"]
+        hist = fetch(f"https://api.llama.fi/v2/historicalChainTvl/{n.replace(' ','%20')}")
+        tvl_chg = (hist[-1]["tvl"]-hist[-8]["tvl"])/hist[-8]["tvl"]*100 if len(hist)>=8 else None
+        try:
+            s = fetch(f"https://stablecoins.llama.fi/stablecoincharts/{n.replace(' ','%20')}")
+            def gt(e): return sum(v for v in e.get("totalCirculatingUSD",{}).values() if isinstance(v,(int,float)))
+            cur_s=gt(s[-1]); prev_s=gt(s[-8]) if len(s)>=8 else gt(s[0])
+            sc=(cur_s-prev_s)/prev_s*100 if prev_s else 0
+        except: cur_s=sc=None
+        res.append({"chain":n,"tvl":c["tvl"],"tvl_chg":tvl_chg,"stable":cur_s,"stable_chg":sc})
+    # ⚠️ 踩坑4：全链稳定币总量
+    all_s = fetch("https://stablecoins.llama.fi/stablecoinchains")
+    total_s = sum(sum(v for v in c.get("totalCirculatingUSD",{}).values() if isinstance(v,(int,float))) for c in all_s)
+    tvl_h = fetch("https://api.llama.fi/v2/historicalChainTvl")
+    g_tvl_chg = (tvl_h[-1]["tvl"]-tvl_h[-8]["tvl"])/tvl_h[-8]["tvl"]*100
+    sh = fetch("https://stablecoins.llama.fi/stablecoincharts/all")
+    def gt2(e): return sum(v for v in e.get("totalCirculatingUSD",{}).values() if isinstance(v,(int,float)))
+    g_sc = (gt2(sh[-1])-gt2(sh[-8]))/gt2(sh[-8])*100
+    return res, {"global_tvl":tvl_h[-1]["tvl"],"global_tvl_chg":g_tvl_chg,"global_stable":total_s,"global_stable_chg":g_sc}
+
+def table3():
+    # ⚠️ 踩坑5：parentProtocol合并
+    protocols = fetch("https://api.llama.fi/protocols")
+    CEX = {"CEX","Exchange","Centralized Exchange"}
+    pm = {}
+    for p in protocols:
+        if not p.get("tvl") or p["tvl"]<=0: continue
+        if p.get("category") in CEX: continue
+        key = p.get("parentProtocol") or p.get("slug") or p["name"]
+        if key not in pm:
+            pm[key]={"name":p["name"],"tvl":0,"txc":0,"twc":0}
+        if not p.get("parentProtocol"): pm[key]["name"]=p["name"]
+        pm[key]["tvl"]+=p["tvl"]
+        chg=p.get("change_7d")
+        if chg is not None:
+            pm[key]["txc"]+=p["tvl"]*chg; pm[key]["twc"]+=p["tvl"]
+    merged=[{"name":v["name"],"tvl":v["tvl"],"chg":v["txc"]/v["twc"] if v["twc"]>0 else None} for v in pm.values()]
+    top100=sorted(merged,key=lambda x:x["tvl"],reverse=True)[:100]
+    return [(i+1,p["name"],round(p["chg"],2)) for i,p in enumerate(top100) if p.get("chg") and p["chg"]>10]
+
+if __name__=="__main__":
+    t1,label=table1(); t2,t2s=table2(); t3=table3()
+    out={"label":label,"table1":t1,"table2":t2,"table2_summary":t2s,"table3":t3}
+    with open("/tmp/defi_data.json","w") as f: json.dump(out,f,ensure_ascii=False,indent=2)
+    print(f"✅ 数据保存 → /tmp/defi_data.json")
+
+================================================================================
+第6段：write_sheet.py 完整脚本
+================================================================================
+
+#!/usr/bin/env python3
+# write_sheet.py — 写入Google Sheet
+# 依赖：pip install gspread google-auth
+
+import json, os, gspread, time
+from google.oauth2.service_account import Credentials
+
+SHEET_ID = "1Iaus-JyVbvdD6CENbG66nOp7vl59pyJL-jvtJwHJL1Q"
+KEY_FILE = os.environ.get(
+    "GCP_KEY_PATH",
+    "/Users/tonyclaw/.openclaw/workspace/memory/gcp-service-account.json"
+)
+SCOPES = ["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"]
+
+def connect():
+    creds = Credentials.from_service_account_file(KEY_FILE,scopes=SCOPES)
+    return gspread.authorize(creds).open_by_key(SHEET_ID)
+
+def fmt(bg,fg,bold=True,size=11):
+    return {"backgroundColor":bg,"textFormat":{"foregroundColor":fg,"bold":bold,"fontSize":size}}
+
+DARK={"red":0.10,"green":0.10,"blue":0.18}
+MID={"red":0.09,"green":0.13,"blue":0.24}
+WHITE={"red":1.0,"green":1.0,"blue":1.0}
+LGRAY={"red":0.88,"green":0.88,"blue":0.88}
+
+def write_sheet(data):
+    sh = connect()
+    label = data["label"]
+    try: sh.del_worksheet(sh.worksheet(label))
+    except: pass
+    ws = sh.add_worksheet(title=label, rows=60, cols=10)
+    rows = []
+    t1=data["table1"]
+    rows.append(["表格一：各链周DEX交易量","","",""])
+    rows.append(["链","本周交易量","上周交易量","周变化"])
+    for c in ["Solana","Ethereum","BSC","Base","Hyperliquid L1","Arbitrum","Polygon","Sui","Avalanche","Tron","Others","Total"]:
+        if c not in t1: continue
+        r=t1[c]
+        rows.append([c,f"${r['w1']/1e6:.0f}M",f"${r['w0']/1e6:.0f}M" if r['w0'] else "-",f"{r['chg']:+.2f}%" if r['chg'] else "-"])
+    rows.append(["","","",""])
+    t2=data["table2"]; s=data["table2_summary"]
+    rows.append([f"表格二：各链DeFi TVL+稳定币 全链TVL:${s['global_tvl']/1e9:.2f}B({s['global_tvl_chg']:+.2f}%) 全链稳定币:${s['global_stable']/1e9:.2f}B({s['global_stable_chg']:+.2f}%)","","","","",""])
+    rows.append(["链","DeFi TVL","TVL周变化","稳定币","稳定币周变化","稳定币占比"])
+    for r in t2:
+        rows.append([r["chain"],f"${r['tvl']/1e6:.0f}M",
+                     f"{r['tvl_chg']:+.2f}%" if r["tvl_chg"] is not None else "N/A",
+                     f"${r['stable']/1e6:.0f}M" if r["stable"] else "NA",
+                     f"{r['stable_chg']:+.2f}%" if r["stable_chg"] is not None else "NA",
+                     f"{r['stable']/s['global_stable']*100:.2f}%" if r["stable"] else "NA"])
+    rows.append(["","","","","",""])
+    t3=data["table3"]
+    rows.append(["表格三：前100协议7d涨幅>10%（父协议合并后）","",""])
+    rows.append(["排名","项目","7d涨幅"])
+    for rank,name,chg in t3:
+        rows.append([rank,name,f"+{chg}%"])
+    ws.update(values=rows,range_name=f"A1:F{len(rows)}")
+    time.sleep(1)
+    t2r=3+12+1; t3r=t2r+2+len(t2)+1
+    ws.batch_format([
+        {"range":"A1:D1","format":fmt(DARK,WHITE)},
+        {"range":"A2:D2","format":fmt(MID,LGRAY)},
+        {"range":f"A{t2r}:F{t2r}","format":fmt(DARK,WHITE,size=10)},
+        {"range":f"A{t2r+1}:F{t2r+1}","format":fmt(MID,LGRAY)},
+        {"range":f"A{t3r}:C{t3r}","format":fmt(DARK,WHITE)},
+        {"range":f"A{t3r+1}:C{t3r+1}","format":fmt(MID,LGRAY)},
+    ])
+    sh.batch_update({"requests":[
+        {"updateDimensionProperties":{"range":{"sheetId":ws.id,"dimension":"COLUMNS","startIndex":0,"endIndex":1},"properties":{"pixelSize":200},"fields":"pixelSize"}},
+        {"updateDimensionProperties":{"range":{"sheetId":ws.id,"dimension":"COLUMNS","startIndex":1,"endIndex":6},"properties":{"pixelSize":110},"fields":"pixelSize"}},
+    ]})
+    print(f"✅ Sheet写入完成")
+
+if __name__=="__main__":
+    with open("/tmp/defi_data.json") as f: data=json.load(f)
+    write_sheet(data)
+
+================================================================================
+第7段：分析框架 + 全部踩坑汇总
+================================================================================
+
+=== 链上数据分析框架 ===
+
+【表格一分析逻辑链（Gater确认）】
+链总量增长 → 哪个协议交易量最高且增长最多
+ → 哪个协议主要交易什么代币对（DexScreener API查）
+ → 该代币为何这周交易量高
+ → 找近期事件（必须本周内）→ 附链接
+
+DexScreener API（免费无Key）:
+https://api.dexscreener.com/latest/dex/search?q={代币名}
+注意：dexscreener.com主页403，必须用api.dexscreener.com
+
+【传销刷量判断标准】（今天发现LGNS案例）
+同时满足以下 → 传销嫌疑：
+- 卖单笔数/买单笔数 > 3
+- 无官网、无社交媒体
+- FDV/市值比 > 5
+案例：LGNS(Polygon) 卖单718,762 vs 买单183,315（卖单4倍）
+FDV=$9.58B vs 市值=$1.02B，无官网无社交 → 刷量，不具有机含量
+
+【表格二分析逻辑链（Gater确认）】
+哪条链TVL增长 → 哪个协议TVL最高且增长最多
+ → DefiLlama Token Breakdown查哪个代币余额增加
+ → 找该代币/协议本周内事件 → 附链接（必须本周内！）
+
+【单日TVL跳升判断】
+单日增幅 > 总TVL的20% → 高度疑似单笔大额存款，非有机增长
+案例：Dolomite 3/25 $285M→$411M(+$126M) = WLFI代币单笔存入
+WLFI占Dolomite TVL约49.5%，流动性极低，TVL数字存疑
+
+【Bitcoin TVL特殊处理】
+全部来自Babylon Protocol（Bitcoin Restaking）
+TVL受BTC价格+质押量双重影响，波动剧烈
+本周+53% = 从3/12腰斩后反弹，不是新增资金流入，要说明
+
+【表格三分析三步（Gater确认）】
+① 链/代币：TVL在哪条链？增长的是哪个代币？
+② 时间点：什么时候开始增长？单日跳升还是缓慢增长？
+③ 原因：本周内事件（官方博客>Medium>DefiLlama>Twitter）
+  无法确认 → 标注"待确认，建议查@项目Twitter"
+  绝对不能引用几个月前的历史合作！
+
+=== 全部踩坑汇总 ===
+
+踩坑1: DEX总量不能各链求和 → 用全局/overview/dexs接口
+踩坑2: 周变化不能用change_7dover7d → 用自然周时间戳汇总
+  Hyperliquid L1：API=-11.77% vs 正确=+6.59%
+踩坑3: 链列表不能硬编码 → 动态筛选TVL>$1B
+踩坑4: 全链稳定币不能加表格各行 → 用/stablecoinchains汇总
+  表格各行加总=$303.37B vs 正确=$316.27B（差$13B）
+踩坑5: 不能用原始协议数据 → 必须parentProtocol合并
+  Spark子协议合并后父协议=+6.9%，不入选（原各自入选）
+踩坑6: DexScreener主页403 → 用api.dexscreener.com API端点
+踩坑7: 分析原因只用本周内事件，不引用历史合作
+踩坑8: Bitcoin TVL波动 = Babylon Protocol，说明是反弹不是新增
+
+=== 运行方式 ===
+# Step 1: 抓链上数据
+python3 fetch_defi_data.py
+
+# Step 2: 写入Google Sheet
+python3 write_sheet.py
+
+# Step 3: 抓资讯候选
+python3 fetch_news.py
+# 把/tmp/news_candidates.json内容交给AI筛选10条
+
+# 依赖安装
+pip install gspread google-auth
+
+================================================================================
+第8段：本周10条候选文章（2026-03-26示例）
+================================================================================
+
+=== 本周10条候选文章（2026年3月19日—3月25日）===
+
+① CLARITY法案：稳定币去利息化的权力博弈
+https://www.panewslab.com/zh/articles/019d237a-dec4-763c-82ce-d0a0ae5c2909
+核心：监管本质是传统金融为稳定币设护城河
+- 禁止支付型稳定币向持有者支付利息
+- 发行量<$10B选州监管，超过强制联邦牌照
+- Circle 80%收入来自国债利息，法案等于釜底抽薪
+- 结论：Tether离岸运营不受约束，反成最大受益者
+
+② Circle暴跌20%：稳定币第一股的结构性困局
+https://www.panewslab.com/zh/articles/019d2408-064c-7113-b88c-81cd9c81a9b2
+核心：分发渠道绑架导致利润空间趋零
+- 80%收入来自美债利息，Coinbase/Binance抽取50-60%分成
+- Coinbase持有Circle约25%股权，双方互相绑定
+- USDC $43B vs Tether USDT $144B，合规换来市场份额被压制
+- 结论：商业模式本身是问题，做基础设施注定被渠道剥削
+
+③ 全球稳定币监管三重奏：GENIUS/香港/MiCA对比
+https://www.panewslab.com/zh/articles/019d2458-a311-73ef-a8f4-6be727267b30
+核心：三大体系都在维护法定货币主权
+- 美国GENIUS：禁算法稳定币，目标美元稳定币全球主导
+- 香港：沙盒完成，允许港元稳定币，最开放灵活
+- 欧盟MiCA：已生效，USDT已从欧洲主要交易所下架
+- 结论：香港路径最可能成为创新产品试验场
+
+④ 自主智能体进入金融市场的系统性风险
+https://www.panewslab.com/zh/articles/019d2494-a2fa-77c1-beaa-b31b6d06f2df
+核心：训练数据趋同→行为相关→系统性清算风险
+- 多个Agent使用相同底层模型，极端行情下同步触发大规模清算
+- 链上放大效应：低流动性市场Agent大额操作造成价格操纵
+- Agent决策黑箱，责任归属不清，传统监管完全失效
+- 结论：去中心化环境中技术收益和系统性风险同步放大
+
+⑤ x402协议：Google/Cloudflare/Stripe集体入局
+https://chainfeeds.substack.com/p/x402-googlecloudflarestripe-token
+核心：AI Agent的钱包问题被Crypto原生解决
+- 基于HTTP 402的微支付协议，Agent调用API直接用USDC付款
+- Google A2A协议、Cloudflare Workers AI、Stripe同周宣布支持
+- 不是Crypto进入AI，而是AI把Crypto作为支付基础设施
+- 获益链：USDC > Coinbase CDP > 高性能链（Solana/Hyperliquid）
+
+⑥ 币安整治做市商：散户保护还是权力重构？
+https://www.odaily.news/zh-CN/post/5209937
+核心：VIP激励体系催生了它想整治的行为
+- 做市商与项目方合谋上币初期拉盘、制造虚假深度后撤离
+- 币安VIP体系给予高额手续费返还，本质激励激进策略
+- 整治后：小做市商淘汰→头部集中度上升→少数大做市商定价权更强
+- 结论：中心化交易所无法绕开人为做市这个结构缺陷
+
+⑦ Kalshi+Polymarket联合注资：预测市场进入机构化阶段
+https://www.odaily.news/zh-CN/post/5209896
+核心：竞争对手合作的背后是共同做大监管认可
+- Kalshi有CFTC合规牌照但流动性弱，Polymarket有链上流动性但无美国合规
+- Polymarket本周Polygon链交易量$1,127M，占该链DEX总量57%
+- 演化方向：从"博彩替代品"→"分布式信息聚合机制"
+- 结论：Polymarket已建立先发优势，Kalshi合规性是进入美国主流市场的钥匙
+
+⑧ Revolut成欧洲最赚钱新银行：加密收入驱动盈利
+来源：ChainFeeds Substack同期
+核心：做应用层而非基础层的价值捕获逻辑
+- 2025年净利润£1.4B，加密业务贡献约30%收入
+- 对比Circle：Circle做基础设施被渠道剥削；Revolut做应用层直接面向用户
+- 持牌+用户界面+加密后端=可持续盈利模式
+- 结论：传统金融机构拥抱加密是真实利润来源，非噱头
+
+⑨ Agentic Trading全景：AI Agent正在接管DeFi策略层
+来源：ChainFeeds Substack同期
+核心：200+Agent管理$500M+，从叙事变成基础设施
+- 链上活跃Agent超200个，管理资产超$500M
+- 主要策略：套利、流动性管理、Yield轮换
+- 策略趋同→同步清算风险（与④文章呼应）
+- 高吞吐低Gas链（Solana/Hyperliquid）是Agent首选
+
+⑩ SEC+CFTC联合数字商品五类法
+https://www.odaily.news/zh-CN/post/5209800
+核心：证券属性可"剥离"是最大突破
+- 首次提供清晰分类：数字商品/数字证券/受监管稳定币/数字工具/数字收藏品
+- 项目去中心化完成后可从"证券"转为"数字商品"
+- 质押/挖矿/包装代币/空投均为"行政性活动"，不构成证券发行
+- 结论：SEC与CFTC首次统一框架，美国项目出走趋势有望逆转
+
+================================================================================
+第9段：给其他AI Agent的执行Prompt
+================================================================================
+
+=== 给其他AI Agent的执行Prompt（直接复制使用）===
+
+你是一个加密行业周报生成专家。请在每周二北京时间15:00执行以下任务：
+
+== 任务一：热点资讯10条 ==
+
+数据时间范围：上周三00:00 至 本周二23:59
+
+步骤：
+1. 抓取以下来源（按优先级）：
+   - ChainFeeds RSS: https://chainfeeds.substack.com/feed（解析XML，取本周内item）
+   - PANews深度: https://www.panewslab.com/zh/in-depth（提取/zh/articles/xxx链接）
+   - Odaily深度: https://www.odaily.news/zh-CN/deep（提取/zh-CN/post/xxx链接）
+
+2. 严格按以下标准筛选10条：
+   优先：机制拆解型 / 数据支撑结构性判断 / 行业结构性转变
+   可选：重要机构深度观点 / 新赛道演化判断
+   不选：纯新闻 / 行情预测 / 价值观叙事 / 单项目介绍 / 泛泛表态 / 速览列举
+
+3. 每条输出格式：
+   **[序号]. [文章标题]**
+   来源：[URL]
+   **核心机制拆解：[副标题，10字以内]**
+   - **[要点1]**：说明+数据
+   - **[要点2]**：说明
+   - **[要点3]**：说明
+   - **[结构性结论/反共识判断]**
+
+== 任务二：链上数据 ==
+
+数据时间范围：上上周一00:00 至 上周日23:59（完整自然周）
+
+步骤：
+1. 用DefiLlama API抓取三张表数据
+2. 写入Google Sheet新tab（以周一日期命名，格式YYYY-MM-DD）
+3. 逐表分析原因，每个判断附本周内来源链接
+
+== 强制约束（必须遵守）==
+
+数据规则：
+- 表格三必须用parentProtocol字段合并子协议（否则子协议重复入选）
+- 全链稳定币总量用/stablecoinchains所有链求和（不能只加表格中的链，会少$13B）
+- DEX周交易量用自然周时间戳汇总（不能用change_7dover7d，滚动7天口径不同）
+- 链列表动态筛选TVL>$1B（不要硬编码）
+
+分析规则：
+- 找原因只用本周内（7天以内）事件，不引用历史合作
+- 无法确认原因时标注"待确认，建议人工查@项目Twitter"，不编造
+- 卖单/买单比>3 且无官网 → 标注"传销嫌疑代币，交易量不具有机含量"
+- 单日TVL跳升>总TVL的20% → 说明是单笔大额，非有机增长
+- Bitcoin TVL波动 → 全部是Babylon Protocol，说明是反弹不是新增资金
+
+工具说明：
+- DefiLlama API：免费无需Key，所有端点见上方脚本
+- DexScreener API：https://api.dexscreener.com/latest/dex/search?q={代币名}
+  （主页403，必须用API端点）
+- Google Sheets：需Service Account JSON Key
+
+完整技术文档：
+https://github.com/tonyfeng2018/weekly-report-skill
+
+================================================================================
+第10段：链上数据实际结果（2026-03-16至3-22）
+================================================================================
+
+=== 链上数据实际结果（数据周：2026-03-16至3-22）===
+Sheet tab名称：2026-03-16
+
+【表格一：各链DEX周交易量】
+链              本周        上周       周变化
+Solana         $13,272M   $12,966M   +2.37%
+Ethereum        $9,432M   $10,139M   -6.97%
+BSC             $6,404M    $6,800M   -5.82%
+Base            $5,250M    $5,668M   -7.39%
+Hyperliquid L1  $1,928M    $1,808M   +6.59%
+Arbitrum        $2,348M    $2,445M   -3.99%
+Polygon         $2,002M    $1,754M  +14.14%
+Sui               $422M      $634M  -33.47%
+Avalanche       $1,051M    $1,160M   -9.41%
+Tron              $585M      $409M  +43.24%
+Others          $5,218M       —        —
+Total          $47,912M   $48,263M   -0.72%
+
+整体：本周全链$47.91B，-0.72%，整体平淡无明显方向
+
+增长链分析：
+▲ Tron +43.24%
+ → SUNSwap V3占95%，稳定币兑换（USDT/TRX/USDD）需求驱动
+ → Tron链稳定币$86B全链第一，日交易量3/15低点$27.7M→3/22高点$109M
+ → 链接：https://defillama.com/protocol/sunswap-v3
+
+▲ Polygon +14.14%
+ → Polymarket占57%，
+ → Polymarket受宏观事件持续活跃（$1,127M）
+ → Quickswap +36.5%增量来自LGNS传销刷量（⚠️不具有机含量）
+ → LGNS：卖单718,762 vs 买单183,315（4倍），FDV $9.58B/市值$1.02B，无官网
+ → 链接：https://dexscreener.com/polygon/0x882df4b0fb50a229c3b4124eb18c759911485bfb
+
+▲ Hyperliquid L1 +6.59%
+ → Project X占36%，本周$618M，3/18单日高峰$169M
+ → 疑似交易激励活动（官方Twitter无法访问，待确认）
+ → 链接：https://defillama.com/protocol/project-x
+
+下降链分析：
+▼ Sui -33.47%
+ → Cetus/Bluefin/DeepBook全线-45~52%
+ → Meme热度退潮后自然回落，无具体事件触发
+
+▼ Avalanche -9.41%
+ → Pharaoh V3 LP净流出$3.2M，Blackhole CLMM净流出$1.3M，合计$4.5M
+ → 激励结束后LP撤离+AVAX价格偏弱
+ → 链接：https://defillama.com/protocol/pharaoh-v3
+
+▼ Ethereum -6.97%
+ → ETH Restaking协议集体收缩：ether.fi -10.2%，EigenCloud -6.5%，Sky Lending -5.5%
+ → Restaking叙事降温，用户减少链上操作
+ → 链接：https://defillama.com/chain/ethereum
+
+【表格二：各链TVL+稳定币】
+全链DeFi TVL：$96.62B（-0.18%）
+全链稳定币：$316.27B（+0.02%）
+
+链              DeFi TVL   TVL周变化  稳定币       稳定币周变化
+Ethereum        $55,695M   -3.9%     $165,208M    —
+Tron            —          —         $86,064M     —
+Solana           $8,318M   -2.75%    $15,766M     —
+BSC              $6,572M   -4.78%    $17,118M     —
+Base             $3,847M   +1.2%     $4,836M      +2.80%
+Bitcoin          $5,190M   +53.33%   NA            —
+Arbitrum         $3,070M   -2.99%    $4,002M      —
+Hyperliquid L1   $3,240M   +0.8%     $5,150M      +2.79%
+Provenance       $1,571M   +4.96%    $230M        —
+Plasma           $1,100M   +22.44%   $1,576M      -12.18%
+Polygon          $1,127M   -1.2%     $3,565M      —
+
+异动分析：
+▲ Bitcoin TVL +53.33%
+ → 全部来自Babylon Protocol（Bitcoin Restaking，TVL $3.4B）
+ → 3/10与Ledger集成公告释放硬件钱包用户入场通道
+ → 注意：Bitcoin TVL在3/12曾腰斩($3.4B→$1.8B)，本周+53%是从低基数反弹，非全新增长
+ → 链接：https://babylonlabs.io/blog/babylon-and-ledger-integration-expands-access-to-trustless-bitcoin-vaults
+
+▲ Plasma稳定币 -12.18%
+ → 净流出$144M($1,720M→$1,576M)，资金向高收益L2迁移
+ → 无单一触发事件
+
+【表格三：前100协议7d涨幅>10%（父协议合并后）】
+排名  项目                 7d涨幅     TVL        赛道
+#16   Babylon Protocol    +85.66%   $3,402M   Restaking
+#41   Centrifuge Protocol +11.81%   $1,503M   RWA
+#54   Anemoy Capital     +20.31%   $1,040M   RWA
+#86   Dolomite           +40.53%     $403M    借贷
+#88   CIAN Yield Layer   +13.48%     $394M    Yield策略
+#89   Mellow Core        +17.21%     $342M    LRT/Restaking
+
+本周6项入选，RWA赛道2席+Restaking赛道2席
+反映机构资金持续流入RWA和BTC质押赛道的结构性趋势
+
+逐项分析：
+Babylon Protocol +85.66%
+ 链/代币：Bitcoin链，原生BTC
+ 时间点：3/10后缓慢回升，3/24-26加速
+ 原因：3/10 Ledger集成 + Clear Signing支持BTCVault，打开自托管用户入场通道
+ 链接：https://babylonlabs.io/blog/babylon-and-ledger-integration-expands-access-to-trustless-bitcoin-vaults
+
+Dolomite +40.53%
+ 链/代币：Ethereum链，WLFI代币（占TVL约49.5%，~$200M）
+ 时间点：3/25单日$285M→$411M（+$126M，单日跳升44%）
+ 原因：WLFI持有者单笔大额存入作抵押品，非有机增长
+ ⚠️ WLFI流动性极低，TVL数字存疑
+
+Centrifuge +11.81%
+ 链/代币：Ethereum链($1,187M)，USD计价美债代币（JAAA/JTRSY）
+ 时间点：3/19起每日稳定流入~$50M
+ 原因：3/19宣布LayerZero合作，推进deRWA跨链分发
+ 链接：https://centrifuge.io/blog
+
+Anemoy Capital +20.31%
+ 链/代币：全部Ethereum链($1,039M)，代币化信贷基金ACRDX
+ 时间点：与Centrifuge节奏完全一致（每日~$50M）
+ 原因：Anemoy产品发行在Centrifuge平台，共享deRWA基础设施，机构资金同步流入
+
+Mellow Core +17.21%
+ 链/代币：Ethereum链($338.7M)，Symbiotic vault LRT份额
+ 时间点：两周从$125M→$342M(+173%)
+ 原因：ether.fi(-10.2%)+EigenCloud(-6.5%)资金流出，向Mellow/Symbiotic新兴路线迁移
+
+CIAN Yield Layer +13.48%
+ 链/代币：Mantle($209.7M,+10.4%)+Ethereum($183.1M,+14.9%)，USDT占43.24%
+ 时间点：持续稳定增长
+ 原因：稳定币用户寻求USDT高收益策略，Mantle激励持续
+ ⚠️ 具体活动待确认，建议查@cian_protocol
+
+================================================================================
+第11段：模型适配说明
+================================================================================
+
+=== 其他AI模型适配说明 ===
+
+【工具能力分层】
+
+Tier 1：工具完整型（如OpenClaw+Claude）
+能力：web_fetch + Python exec + Google Sheets API
+直接运行三个脚本，全自动完成
+
+Tier 2：有代码执行但无网络（如ChatGPT Code Interpreter）
+限制：无法直接抓取网页和API
+解决方案：
+  Step 1. 在本地运行 fetch_defi_data.py，生成 /tmp/defi_data.json
+  Step 2. 把 defi_data.json 内容上传给AI
+  Step 3. AI读取数据，生成分析报告
+  Step 4. 本地运行 write_sheet.py 写入Google Sheet
+
+Tier 3：纯对话型（GPT API/Claude API/Gemini，无工具）
+限制：无web_fetch、无Python执行、无Google Sheet访问
+解决方案（手动数据输入流程）：
+
+  【链上数据手动流程】
+  Step 1. 打开以下网址，截图或复制数据：
+    表格一：https://defillama.com/dexs/chains
+    表格二：https://defillama.com/chains
+    表格三：https://defillama.com → 协议列表筛选7d涨幅
+  Step 2. 把数据粘贴给AI
+  Step 3. 告诉AI："按第9段执行Prompt的要求分析这些数据"
+  Step 4. AI生成分析报告，你手动复制到Google Sheet
+
+  【资讯手动流程】
+  Step 1. 打开以下来源，复制本周文章标题+链接：
+    - https://chainfeeds.substack.com（最新一期）
+    - https://www.panewslab.com/zh/in-depth
+    - https://www.odaily.news/zh-CN/deep
+  Step 2. 把标题列表粘贴给AI
+  Step 3. AI根据选题标准筛选10条
+  Step 4. 逐篇打开文章，让AI生成详细摘要
+
+【关键注意事项（给纯对话AI）】
+必须告诉AI以下规则，否则它会出错：
+1. "表格三数据需要按parentProtocol合并子协议，Spark等子协议不能单独计算"
+2. "全链稳定币总量要用defillama所有链的总和，不是表格中各链加总"
+3. "周变化要用我提供的自然周数据，不要用API里的change_7dover7d字段"
+4. "分析原因只能用本周内（7天内）的事件，不能引用几个月前的历史合作"
+5. "卖单/买单比超过3倍且无官网的代币，标注传销嫌疑"
+
+【模型推荐】
+- 最佳：OpenClaw + Claude Sonnet（全自动，即本系统）
+- 备选1：GPT-4o + Code Interpreter（需手动提供数据）
+- 备选2：Claude.ai（纯对话，需手动提供数据+完整Prompt）
+- 备选3：Gemini Advanced（同上）
+
+【给其他AI的快速启动方式】
+直接发以下内容给任何AI模型：
+
+"请读取以下Skill文档，按照其中的说明执行加密周报任务：
+https://raw.githubusercontent.com/tonyfeng2018/weekly-report-skill/main/README.md
+
+我会提供本周的数据，请按照文档中的选题标准、分析框架和输出格式执行。"
+
+================================================================================
+END OF DOCUMENT
+================================================================================
