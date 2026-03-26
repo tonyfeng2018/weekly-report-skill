@@ -3,13 +3,17 @@
 # 依赖：pip install gspread google-auth
 
 import json
+import os
 import gspread
 from google.oauth2.service_account import Credentials
 import time
 
 # ─── 配置 ─────────────────────────────────────────────────────
 SHEET_ID = "1Iaus-JyVbvdD6CENbG66nOp7vl59pyJL-jvtJwHJL1Q"
-KEY_FILE = "/home/node/.openclaw/workspace/memory/gcp-service-account.json"
+KEY_FILE = os.environ.get(
+    "GCP_KEY_PATH",
+    "/Users/tonyclaw/.openclaw/workspace/memory/gcp-service-account.json"
+)
 SCOPES = ["https://spreadsheets.google.com/feeds",
           "https://www.googleapis.com/auth/drive"]
 DATA_FILE = "/tmp/defi_data.json"
