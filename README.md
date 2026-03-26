@@ -1,4 +1,4 @@
-# Gater Weekly Report Skill
+# Weekly Report Skill
 
 **加密行业周报自动化系统 | Crypto Weekly Newsletter Automation**
 
